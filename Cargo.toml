@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1.0.75", features = ["backtrace"] }
 clap = { version = "4.4.0", features = ["derive", "env"] }
+const_format = "0.2.31"
 dotenv = { version = "0.15.0" }
 env_logger = "0.10.0"
 log = "0.4.20"

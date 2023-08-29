@@ -25,10 +25,17 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
-    
-    let client = Notion::new(cli.token_v2);
-    let data = client.get_page_data(&cli.page_id).await?;
 
-    println!("{data:#?}");
+    let client = Notion::new(cli.token_v2);
+    {
+        let data = client.get_page_data(&cli.page_id).await?;
+        println!("{data:#?}");
+    }
+    {
+        let data = client
+            .load_page_chunk_request(&cli.page_id, 0, 30, None)
+            .await?;
+        println!("{data:#?}");
+    }
     Ok(())
 }

@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
 use anyhow::{ensure, Context, Result};
+use const_format::formatcp;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
+
+const NOTION_API_BASE: &str = "https://www.notion.so/api/v3";
 
 #[derive(Debug)]
 pub struct Notion {
@@ -23,7 +28,7 @@ impl Notion {
             show_move_to: false,
         };
         let res = client
-            .post("https://www.notion.so/api/v3/getPublicPageData")
+            .post(formatcp!("{NOTION_API_BASE}/getPublicPageData"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::COOKIE, format!("token_v2={}", self.token_v2))
             .json(&req)
@@ -34,6 +39,66 @@ impl Notion {
         let res = res.json::<PageDataResponse>().await.context("parse json")?;
         Ok(res)
     }
+
+    pub async fn load_page_chunk_request(
+        &self,
+        page_id: &str,
+        chunk_number: usize,
+        limit: usize,
+        cursor: Option<Cursor>,
+    ) -> Result<LoadPageChunkResponse> {
+        let page_id = to_dashed_id(page_id).context("convert to dashed id")?;
+        let client = reqwest::Client::builder().build()?;
+        let req = LoadPageChunkRequest {
+            page_id,
+            chunk_number,
+            limit,
+            cursor,
+            vertical_columns: false,
+        };
+        let res = client
+            .post(formatcp!("{NOTION_API_BASE}/loadPageChunk"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, format!("token_v2={}", self.token_v2))
+            .json(&req)
+            .send()
+            .await
+            .context("request")?;
+        ensure!(res.status().is_success(), res.status());
+        let res = res
+            .json::<LoadPageChunkResponse>()
+            .await
+            .context("parse json")?;
+        Ok(res)
+    }
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Stack {
+    pub id: String,
+    pub index: usize,
+    pub table: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Cursor {
+    pub stack: Vec<Vec<Stack>>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Block {
+    pub role: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordMap {
+    #[serde(rename = "block")]
+    pub blocks: HashMap<String, Block>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
@@ -59,6 +124,23 @@ pub struct PageDataResponse {
     pub space_id: String,
     pub space_name: String,
     pub user_has_explicit_access: bool,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadPageChunkRequest {
+    pub page_id: String,
+    pub chunk_number: usize,
+    pub limit: usize,
+    pub cursor: Option<Cursor>,
+    pub vertical_columns: bool,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadPageChunkResponse {
+    pub cursor: Cursor,
+    pub record_map: RecordMap,
 }
 
 /// id をダッシュでつなげたやつにする
