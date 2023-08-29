@@ -88,10 +88,26 @@ pub struct Cursor {
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct BlockValue {
+    pub alive: bool,
+    pub created_by_id: String,
+    pub created_by_table: String,
+    pub created_time: usize,
+    pub file_ids: Option<Vec<String>>,
+    pub id: String,
+    pub space_id: String,
+    pub r#type: String,
+
+    #[serde(flatten)]
+    pub rest: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
     pub role: String,
-    pub value: serde_json::Value,
+    pub value: BlockValue,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
