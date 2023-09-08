@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::{ensure, Context, Result};
-use const_format::formatcp;
-use reqwest::header;
-use serde::{Deserialize, Serialize};
+use reqwest::{header, Method};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 const NOTION_API_BASE: &str = "https://www.notion.so/api/v3";
 
@@ -19,7 +18,6 @@ impl Notion {
 
     pub async fn get_page_data(&self, page_id: &str) -> Result<PageDataResponse> {
         let page_id = to_dashed_id(page_id).context("convert to dashed id")?;
-        let client = reqwest::Client::builder().build()?;
         let req = PageDataRequest {
             r#type: "block-space".to_string(),
             block_id: page_id,
@@ -27,17 +25,7 @@ impl Notion {
             save_parent: false,
             show_move_to: false,
         };
-        let res = client
-            .post(formatcp!("{NOTION_API_BASE}/getPublicPageData"))
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::COOKIE, format!("token_v2={}", self.token_v2))
-            .json(&req)
-            .send()
-            .await
-            .context("request")?;
-        ensure!(res.status().is_success(), res.status());
-        let res = res.json::<PageDataResponse>().await.context("parse json")?;
-        Ok(res)
+        self.request(Method::POST, "/getPublicPageData", &req).await
     }
 
     pub async fn load_page_chunk_request(
@@ -48,7 +36,6 @@ impl Notion {
         cursor: Option<Cursor>,
     ) -> Result<LoadPageChunkResponse> {
         let page_id = to_dashed_id(page_id).context("convert to dashed id")?;
-        let client = reqwest::Client::builder().build()?;
         let req = LoadPageChunkRequest {
             page_id,
             chunk_number,
@@ -56,19 +43,39 @@ impl Notion {
             cursor,
             vertical_columns: false,
         };
+        self.request(Method::POST, "/loadPageChunk", &req).await
+    }
+
+    pub async fn get_upload_file_url(
+        &self,
+        name: String,
+        content_type: String,
+    ) -> Result<GetUploadFileUrlResponse> {
+        let req = GetUploadFileUrlRequest {
+            bucket: "secure".to_string(),
+            content_type,
+            name,
+        };
+        self.request(Method::POST, "/getUploadFileUrl", &req).await
+    }
+
+    pub async fn request<R: DeserializeOwned>(
+        &self,
+        method: Method,
+        resource: &str,
+        body: &impl Serialize,
+    ) -> Result<R> {
+        let client = reqwest::Client::builder().build().context("build client")?;
         let res = client
-            .post(formatcp!("{NOTION_API_BASE}/loadPageChunk"))
+            .request(method, format!("{NOTION_API_BASE}{resource}"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::COOKIE, format!("token_v2={}", self.token_v2))
-            .json(&req)
+            .json(&body)
             .send()
             .await
             .context("request")?;
         ensure!(res.status().is_success(), res.status());
-        let res = res
-            .json::<LoadPageChunkResponse>()
-            .await
-            .context("parse json")?;
+        let res = res.json::<R>().await.context("parse json")?;
         Ok(res)
     }
 }
@@ -157,6 +164,24 @@ pub struct LoadPageChunkRequest {
 pub struct LoadPageChunkResponse {
     pub cursor: Cursor,
     pub record_map: RecordMap,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetUploadFileUrlRequest {
+    pub bucket: String,
+    pub content_type: String,
+    pub name: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetUploadFileUrlResponse {
+    pub url: String,
+    pub signed_get_url: String,
+    pub signed_put_url: String,
+    #[serde(flatten)]
+    pub rest: serde_json::Value,
 }
 
 /// id をダッシュでつなげたやつにする
