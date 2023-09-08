@@ -20,7 +20,13 @@ pub struct Cli {
     #[clap(short, long, env = "NOTION_TOKEN_V2")]
     pub token_v2: String,
 
+    #[clap(short, long, env = "USER_AGENT")]
+    pub user_agent: Option<String>,
+
     pub path: PathBuf,
+
+    #[clap(long)]
+    pub skip_get_page: bool,
 }
 
 #[tokio::main]
@@ -34,12 +40,13 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let client = Notion::new(cli.token_v2);
-    {
+    let client = Notion::new(cli.token_v2, cli.user_agent);
+    println!("UA: {}", client.user_agent());
+    if !cli.skip_get_page {
         let data = client.get_page_data(&cli.page_id).await?;
         println!("{data:#?}");
     }
-    {
+    if !cli.skip_get_page {
         let data = client
             .load_page_chunk_request(&cli.page_id, 0, 30, None)
             .await?;

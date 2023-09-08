@@ -5,15 +5,20 @@ use reqwest::{header, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 const NOTION_API_BASE: &str = "https://www.notion.so/api/v3";
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
 pub struct Notion {
+    user_agent: Option<String>,
     token_v2: String,
 }
 
 impl Notion {
-    pub fn new(token_v2: String) -> Notion {
-        Notion { token_v2 }
+    pub fn new(token_v2: String, user_agent: Option<String>) -> Notion {
+        Notion {
+            user_agent,
+            token_v2,
+        }
     }
 
     pub async fn get_page_data(&self, page_id: &str) -> Result<PageDataResponse> {
@@ -70,6 +75,7 @@ impl Notion {
             .request(method, format!("{NOTION_API_BASE}{resource}"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::COOKIE, format!("token_v2={}", self.token_v2))
+            .header(header::USER_AGENT, self.user_agent())
             .json(&body)
             .send()
             .await
@@ -77,6 +83,13 @@ impl Notion {
         ensure!(res.status().is_success(), res.status());
         let res = res.json::<R>().await.context("parse json")?;
         Ok(res)
+    }
+
+    pub fn user_agent(&self) -> &str {
+        self.user_agent
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or(DEFAULT_USER_AGENT)
     }
 }
 
