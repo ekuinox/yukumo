@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use reqwest::{header, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use uuid::Uuid;
 
 const NOTION_API_BASE: &str = "https://www.notion.so/api/v3";
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
@@ -21,8 +22,7 @@ impl Notion {
         }
     }
 
-    pub async fn get_page_data(&self, page_id: &str) -> Result<PageDataResponse> {
-        let page_id = to_dashed_id(page_id).context("convert to dashed id")?;
+    pub async fn get_page_data(&self, page_id: String) -> Result<PageDataResponse> {
         let req = PageDataRequest {
             r#type: "block-space".to_string(),
             block_id: page_id,
@@ -35,12 +35,11 @@ impl Notion {
 
     pub async fn load_page_chunk_request(
         &self,
-        page_id: &str,
+        page_id: String,
         chunk_number: usize,
         limit: usize,
         cursor: Option<Cursor>,
     ) -> Result<LoadPageChunkResponse> {
-        let page_id = to_dashed_id(page_id).context("convert to dashed id")?;
         let req = LoadPageChunkRequest {
             page_id,
             chunk_number,
@@ -55,13 +54,33 @@ impl Notion {
         &self,
         name: String,
         content_type: String,
+        content_length: usize,
+        block_id: String,
+        space_id: String,
     ) -> Result<GetUploadFileUrlResponse> {
         let req = GetUploadFileUrlRequest {
             bucket: "secure".to_string(),
             content_type,
             name,
+            content_length,
+            record: GetUploadFileUrlRequestRecord {
+                id: block_id,
+                space_id,
+                table: "block".to_string(),
+            },
         };
         self.request(Method::POST, "/getUploadFileUrl", &req).await
+    }
+
+    pub async fn save_transactions(&self, transactions: Vec<Transaction>) -> Result<()> {
+        let req = SaveTransactionRequest {
+            request_id: Uuid::new_v4().to_string(),
+            transactions,
+        };
+        let _: serde_json::Value = self
+            .request(Method::POST, "/saveTransactions", &req)
+            .await?;
+        Ok(())
     }
 
     pub async fn request<R: DeserializeOwned>(
@@ -80,8 +99,15 @@ impl Notion {
             .send()
             .await
             .context("request")?;
-        ensure!(res.status().is_success(), res.status());
-        let res = res.json::<R>().await.context("parse json")?;
+        let status = res.status();
+        let text = res.text().await;
+        if !status.is_success() {
+            let text = text.unwrap_or_default();
+            bail!("{status} {text}");
+        }
+        let text = text.context("parse text error")?;
+        let res =
+            serde_json::from_str::<R>(&text).with_context(|| format!("parse json {text:?}"))?;
         Ok(res)
     }
 
@@ -111,13 +137,7 @@ pub struct Cursor {
 #[serde(rename_all = "snake_case")]
 pub struct BlockValue {
     pub alive: bool,
-    pub created_by_id: String,
-    pub created_by_table: String,
-    pub created_time: usize,
-    pub file_ids: Option<Vec<String>>,
     pub id: String,
-    pub space_id: String,
-    pub r#type: String,
 
     #[serde(flatten)]
     pub rest: serde_json::Value,
@@ -181,10 +201,20 @@ pub struct LoadPageChunkResponse {
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct GetUploadFileUrlRequestRecord {
+    pub id: String,
+    pub space_id: String,
+    pub table: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct GetUploadFileUrlRequest {
     pub bucket: String,
     pub content_type: String,
     pub name: String,
+    pub content_length: usize,
+    pub record: GetUploadFileUrlRequestRecord,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
@@ -195,6 +225,47 @@ pub struct GetUploadFileUrlResponse {
     pub signed_put_url: String,
     #[serde(flatten)]
     pub rest: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationPointer {
+    pub table: String,
+    pub id: String,
+    pub space_id: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationCommand {
+    Set,
+    Update,
+    ListAfter,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    pub pointer: OperationPointer,
+    pub path: HashSet<String>,
+    pub command: OperationCommand,
+    pub args: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Transaction {
+    pub id: String,
+    pub space_id: String,
+    pub operations: Vec<Operation>,
+    pub debug: HashMap<String, String>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTransactionRequest {
+    pub request_id: String,
+    pub transactions: Vec<Transaction>,
 }
 
 /// id をダッシュでつなげたやつにする
