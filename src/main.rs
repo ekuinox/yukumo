@@ -18,17 +18,34 @@ use crate::notion::{
 };
 
 #[derive(Parser, Debug)]
-pub struct Cli {
-    #[clap(short, long, env = "NOTION_PAGE_ID")]
-    pub page_id: String,
+pub enum Cli {
+    Upload {
+        #[clap(short, long, env = "NOTION_PAGE_ID")]
+        page_id: String,
 
-    #[clap(short, long, env = "NOTION_TOKEN_V2")]
-    pub token_v2: String,
+        #[clap(short, long, env = "NOTION_TOKEN_V2")]
+        token_v2: String,
 
-    #[clap(short, long, env = "USER_AGENT")]
-    pub user_agent: Option<String>,
+        #[clap(short, long, env = "USER_AGENT")]
+        user_agent: Option<String>,
 
-    pub path: PathBuf,
+        path: PathBuf,
+    },
+    Download {
+        #[clap(short, long, env = "NOTION_PAGE_ID")]
+        page_id: String,
+
+        #[clap(short, long, env = "NOTION_TOKEN_V2")]
+        token_v2: String,
+
+        #[clap(short, long, env = "NOTION_FILE_TOKEN")]
+        file_token: String,
+
+        #[clap(short, long, env = "USER_AGENT")]
+        user_agent: Option<String>,
+
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -42,10 +59,34 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let client = Notion::new(cli.token_v2, cli.user_agent);
+    match cli {
+        Cli::Upload {
+            page_id,
+            token_v2,
+            user_agent,
+            path,
+        } => upload(page_id, token_v2, user_agent, path).await,
+        Cli::Download {
+            page_id,
+            token_v2,
+            file_token,
+            user_agent,
+            path,
+        } => download(page_id, token_v2, file_token, user_agent, path).await,
+    }
+}
+
+async fn download(
+    page_id: String,
+    token_v2: String,
+    file_token: String,
+    user_agent: Option<String>,
+    path: PathBuf,
+) -> Result<()> {
+    let client = Notion::new(token_v2, user_agent);
     dbg!(client.user_agent());
 
-    let page_id = to_dashed_id(&cli.page_id).context("parse page id")?;
+    let page_id = to_dashed_id(&page_id).context("parse page id")?;
 
     // ページから spaceId を取り出す
     let PageDataResponse {
@@ -64,6 +105,105 @@ async fn main() -> Result<()> {
         .load_page_chunk_request(page_id.clone(), 0, 50, None)
         .await
         .context("load page chunk")?;
+
+    let urls = record_map
+        .blocks
+        .into_iter()
+        .flat_map(|(id, block)| {
+            block.value.rest.get("properties").and_then(|properties| {
+                properties
+                    .get("source")
+                    .and_then(|source| {
+                        source.get(0).and_then(|source| {
+                            source
+                                .get(0)
+                                .and_then(|o| o.as_str().map(|s| s.to_string()))
+                        })
+                    })
+                    .map(|url| (id, url))
+            })
+        })
+        .map(|(id, url)| GetSignedFileUrlsRequestUrl {
+            url,
+            permission_record: OperationPointer {
+                table: "block".to_string(),
+                id,
+                space_id: space_id.clone(),
+            },
+            use_s3_url: false,
+        })
+        .collect::<Vec<_>>();
+
+    if urls.is_empty() {
+        log::info!("Not found file urls");
+        return Ok(());
+    }
+
+    let GetSignedFileUrlsResponse { signed_urls } = client
+        .get_signed_file_urls(&GetSignedFileUrlsRequest { urls })
+        .await
+        .context("get signed urls")?;
+
+    if !path.exists() {
+        tokio::fs::create_dir_all(&path).await?;
+    }
+
+    let file_token = format!("file_token={file_token}");
+    for url in signed_urls {
+        let res = reqwest::Client::builder()
+            .build()?
+            .get(&url)
+            .header(header::COOKIE, &file_token)
+            .send()
+            .await?;
+        ensure!(res.status().is_success());
+        if let Some(s) = res
+            .url()
+            .path_segments()
+            .and_then(|segments| segments.last())
+        {
+            let path = path.join(s);
+            let bytes = res.bytes().await?;
+            tokio::fs::write(&path, bytes).await?;
+            log::info!("Saved {path:?}");
+        }
+
+        log::info!("- {url}");
+    }
+
+    Ok(())
+}
+
+async fn upload(
+    page_id: String,
+    token_v2: String,
+    user_agent: Option<String>,
+    path: PathBuf,
+) -> Result<()> {
+    let client = Notion::new(token_v2, user_agent);
+    dbg!(client.user_agent());
+
+    let page_id = to_dashed_id(&page_id).context("parse page id")?;
+
+    // ページから spaceId を取り出す
+    let PageDataResponse {
+        owner_user_id,
+        page_id,
+        space_id,
+        ..
+    } = client.get_page_data(page_id).await.context("get page")?;
+
+    log::debug!("page_id = {page_id}");
+    log::debug!("space_id = {space_id}");
+    log::debug!("owner_user_id = {owner_user_id}");
+
+    // ページのブロックを読みだす
+    let LoadPageChunkResponse { record_map, .. } = client
+        .load_page_chunk_request(page_id.clone(), 0, 50, None)
+        .await
+        .context("load page chunk")?;
+
+    log::trace!("record_map: {record_map:#?}");
 
     // 挿入先の末尾の blockId が欲しい
     // これ元が HashMap なせいで挿入先が末尾に限られない
@@ -216,13 +356,13 @@ async fn main() -> Result<()> {
     log::debug!("formated new block");
 
     // ファイルをアップロードして
-    let content_length = tokio::fs::metadata(&cli.path)
+    let content_length = tokio::fs::metadata(&path)
         .await
         .context("get metadata")?
         .len();
-    let mime = mime_guess::from_path(&cli.path);
+    let mime = mime_guess::from_path(&path);
     let mime = mime.first_or_text_plain().to_string();
-    let name = cli.path.file_name().unwrap().to_str().unwrap().to_string();
+    let name = path.file_name().unwrap().to_str().unwrap().to_string();
     let GetUploadFileUrlResponse {
         signed_get_url,
         signed_put_url,
@@ -246,7 +386,7 @@ async fn main() -> Result<()> {
     {
         let client = reqwest::Client::builder().gzip(true).build()?;
         let stream = FramedRead::new(
-            File::open(&cli.path).await.context("open file")?,
+            File::open(&path).await.context("open file")?,
             BytesCodec::new(),
         );
 
@@ -254,7 +394,7 @@ async fn main() -> Result<()> {
             .put(&signed_put_url)
             .header(
                 header::CONTENT_LENGTH,
-                std::fs::metadata(&cli.path).unwrap().len(),
+                std::fs::metadata(&path).unwrap().len(),
             )
             .header(header::CONTENT_TYPE, mime)
             .body(Body::wrap_stream(stream))
