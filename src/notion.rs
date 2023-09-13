@@ -83,6 +83,13 @@ impl Notion {
         Ok(())
     }
 
+    pub async fn get_signed_file_urls(
+        &self,
+        req: &GetSignedFileUrlsRequest,
+    ) -> Result<GetSignedFileUrlsResponse> {
+        self.request(Method::POST, "/getSignedFileUrls", req).await
+    }
+
     pub async fn request<R: DeserializeOwned>(
         &self,
         method: Method,
@@ -266,6 +273,26 @@ pub struct Transaction {
 pub struct SaveTransactionRequest {
     pub request_id: String,
     pub transactions: Vec<Transaction>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSignedFileUrlsRequestUrl {
+    pub permission_record: OperationPointer,
+    pub url: String,
+    pub use_s3_url: bool,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSignedFileUrlsRequest {
+    pub urls: Vec<GetSignedFileUrlsRequestUrl>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Eq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSignedFileUrlsResponse {
+    pub signed_urls: Vec<String>,
 }
 
 /// id をダッシュでつなげたやつにする

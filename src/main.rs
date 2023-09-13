@@ -12,8 +12,9 @@ use tokio_util::codec::{BytesCodec, FramedRead};
 use uuid::Uuid;
 
 use crate::notion::{
-    to_dashed_id, GetUploadFileUrlResponse, LoadPageChunkResponse, Notion, Operation,
-    OperationCommand, OperationPointer, PageDataResponse, Transaction,
+    to_dashed_id, GetSignedFileUrlsRequest, GetSignedFileUrlsRequestUrl, GetSignedFileUrlsResponse,
+    GetUploadFileUrlResponse, LoadPageChunkResponse, Notion, Operation, OperationCommand,
+    OperationPointer, PageDataResponse, Transaction,
 };
 
 #[derive(Parser, Debug)]
@@ -298,6 +299,19 @@ async fn main() -> Result<()> {
         }])
         .await
         .context("insert file to block")?;
+
+    let GetSignedFileUrlsResponse { signed_urls } = client
+        .get_signed_file_urls(&GetSignedFileUrlsRequest {
+            urls: vec![GetSignedFileUrlsRequestUrl {
+                permission_record: new_block_pointer,
+                url,
+                use_s3_url: false,
+            }],
+        })
+        .await
+        .context("get signed files urls")?;
+
+    println!("{signed_urls:?}");
 
     Ok(())
 }
