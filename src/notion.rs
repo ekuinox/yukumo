@@ -179,7 +179,7 @@ pub struct PageDataRequest {
 pub struct PageDataResponse {
     pub beta_enabled: bool,
     pub can_join_space: bool,
-    pub owner_user_id: String,
+    pub owner_user_id: Option<String>,
     pub page_id: String,
     pub public_access_role: String,
     pub require_login: bool,

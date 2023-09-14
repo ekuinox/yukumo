@@ -98,7 +98,10 @@ async fn download(
 
     log::debug!("page_id = {page_id}");
     log::debug!("space_id = {space_id}");
-    log::debug!("owner_user_id = {owner_user_id}");
+    log::debug!(
+        "owner_user_id = {}",
+        owner_user_id.as_ref().map(String::as_str).unwrap_or("")
+    );
 
     // ページのブロックを読みだす
     let LoadPageChunkResponse { record_map, .. } = client
@@ -195,7 +198,10 @@ async fn upload(
 
     log::debug!("page_id = {page_id}");
     log::debug!("space_id = {space_id}");
-    log::debug!("owner_user_id = {owner_user_id}");
+    log::debug!(
+        "owner_user_id = {}",
+        owner_user_id.as_ref().map(String::as_str).unwrap_or("")
+    );
 
     // ページのブロックを読みだす
     let LoadPageChunkResponse { record_map, .. } = client
