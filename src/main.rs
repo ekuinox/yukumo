@@ -335,12 +335,12 @@ async fn upload(
                     path: ["format"].into_iter().map(ToString::to_string).collect(),
                     command: OperationCommand::Update,
                     args: [
-                        ("block_width", json!(2048)),
+                        ("block_width", json!(120)),
                         ("block_height", serde_json::Value::Null),
                         ("block_preserve_scale", json!(true)),
                         ("block_full_width", json!(false)),
-                        ("block_page_width", json!(true)),
-                        ("block_aspect_ratio", json!(0.63232421875)),
+                        ("block_page_width", json!(false)),
+                        // ("block_aspect_ratio", json!(0.63232421875)),
                     ]
                     .into_iter()
                     .map(|(k, v)| (k.to_string(), v))
