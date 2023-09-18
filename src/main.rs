@@ -2,7 +2,7 @@ mod notion;
 
 use std::path::PathBuf;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use clap::Parser;
 use dotenv::dotenv;
 use futures::{Stream, StreamExt};
@@ -283,27 +283,6 @@ async fn upload(
         owner_user_id.as_ref().map(String::as_str).unwrap_or("")
     );
 
-    // ページのブロックを読みだす
-    let LoadPageChunkResponse { record_map, .. } = client
-        .load_page_chunk_request(page_id.clone(), 0, 50, None)
-        .await
-        .context("load page chunk")?;
-
-    log::trace!("record_map: {record_map:#?}");
-
-    // 挿入先の末尾の blockId が欲しい
-    // これ元が HashMap なせいで挿入先が末尾に限られない
-    let after = record_map
-        .blocks
-        .into_iter()
-        .last()
-        .filter(|(_, b)| b.value.alive)
-        .map(|(id, _)| id);
-    let Some(after) = after else {
-        bail!("blocks are empty");
-    };
-    log::debug!("after = {after}");
-
     // 最初にブロックを作っとかないといけないっぽい
     let new_block_id = Uuid::new_v4().to_string();
     let new_block_pointer = OperationPointer {
@@ -375,13 +354,10 @@ async fn upload(
                     },
                     path: ["content"].into_iter().map(ToString::to_string).collect(),
                     command: OperationCommand::ListAfter,
-                    args: [
-                        ("after", json!(after.clone())),
-                        ("id", json!(new_block_id.clone())),
-                    ]
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect(),
+                    args: [("id", json!(new_block_id.clone()))]
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect(),
                 },
                 // Operation {
                 //     pointer: new_block_pointer.clone(),
