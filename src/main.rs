@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use anyhow::{bail, ensure, Context, Result};
 use clap::Parser;
 use dotenv::dotenv;
+use futures::{Stream, StreamExt};
+use indicatif::ProgressBar;
 use reqwest::{header, Body};
 use serde_json::json;
 use tokio::fs::File;
-use tokio_util::codec::{BytesCodec, FramedRead};
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::notion::{
@@ -44,6 +46,15 @@ pub enum Cli {
         #[clap(short, long, env = "USER_AGENT")]
         user_agent: Option<String>,
 
+        #[clap(long)]
+        url: Option<String>,
+
+        #[clap(long)]
+        space_id: Option<String>,
+
+        #[clap(long)]
+        block_id: Option<String>,
+
         path: PathBuf,
     },
 }
@@ -72,8 +83,77 @@ async fn main() -> Result<()> {
             file_token,
             user_agent,
             path,
-        } => download(page_id, token_v2, file_token, user_agent, path).await,
+            url,
+            space_id,
+            block_id,
+        } => {
+            if let Some(((url, space_id), block_id)) = url.zip(space_id).zip(block_id) {
+                download_with_url(
+                    url, block_id, space_id, token_v2, file_token, user_agent, path,
+                )
+                .await
+            } else {
+                download(page_id, token_v2, file_token, user_agent, path).await
+            }
+        }
     }
+}
+
+async fn download_with_url(
+    url: String,
+    block_id: String,
+    space_id: String,
+    token_v2: String,
+    file_token: String,
+    user_agent: Option<String>,
+    path: PathBuf,
+) -> Result<()> {
+    let client = Notion::new(token_v2, user_agent);
+    dbg!(client.user_agent());
+
+    let GetSignedFileUrlsResponse { signed_urls } = client
+        .get_signed_file_urls(&GetSignedFileUrlsRequest {
+            urls: vec![GetSignedFileUrlsRequestUrl {
+                url,
+                use_s3_url: false,
+                permission_record: OperationPointer {
+                    table: "block".to_string(),
+                    id: block_id,
+                    space_id,
+                },
+            }],
+        })
+        .await
+        .context("get signed urls")?;
+
+    if !path.exists() {
+        tokio::fs::create_dir_all(&path).await?;
+    }
+
+    let file_token = format!("file_token={file_token}");
+    for url in signed_urls {
+        let res = reqwest::Client::builder()
+            .build()?
+            .get(&url)
+            .header(header::COOKIE, &file_token)
+            .send()
+            .await?;
+        ensure!(res.status().is_success());
+        if let Some(s) = res
+            .url()
+            .path_segments()
+            .and_then(|segments| segments.last())
+        {
+            let path = path.join(s);
+            let bytes = res.bytes().await?;
+            tokio::fs::write(&path, bytes).await?;
+            log::info!("Saved {path:?}");
+        }
+
+        log::info!("- {url}");
+    }
+
+    Ok(())
 }
 
 async fn download(
@@ -385,16 +465,20 @@ async fn upload(
         .await
         .context("get upload file url")?;
 
+    log::info!("block_id = {new_block_id}");
+    log::info!("space_id = {space_id}");
+    log::info!("url = {url}");
     log::info!("signed_get_url = {signed_get_url}");
     log::debug!("signed_put_url = {signed_put_url}");
-    log::debug!("url = {url}");
 
     {
         let client = reqwest::Client::builder().gzip(true).build()?;
-        let stream = FramedRead::new(
-            File::open(&path).await.context("open file")?,
-            BytesCodec::new(),
-        );
+        let file = File::open(&path)
+            .await
+            .context("Failed to open input file")?;
+
+        let pb = ProgressBar::new(content_length);
+        let stream = create_upload_stream(file, pb);
 
         let res = client
             .put(&signed_put_url)
@@ -446,19 +530,6 @@ async fn upload(
         .await
         .context("insert file to block")?;
 
-    let GetSignedFileUrlsResponse { signed_urls } = client
-        .get_signed_file_urls(&GetSignedFileUrlsRequest {
-            urls: vec![GetSignedFileUrlsRequestUrl {
-                permission_record: new_block_pointer,
-                url,
-                use_s3_url: false,
-            }],
-        })
-        .await
-        .context("get signed files urls")?;
-
-    println!("{signed_urls:?}");
-
     Ok(())
 }
 
@@ -474,5 +545,20 @@ fn size_to_text(bytes: usize) -> String {
         format!("{:.1}GB", bytes as f64 / UNIT.pow(3) as f64)
     } else {
         format!("{:.1}TB", bytes as f64 / UNIT.pow(4) as f64)
+    }
+}
+
+fn create_upload_stream(
+    file: File,
+    pb: ProgressBar,
+) -> impl Stream<Item = anyhow::Result<bytes::Bytes>> + 'static {
+    async_stream::try_stream! {
+        let mut stream = ReaderStream::new(file);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            pb.inc(chunk.len() as u64);
+            yield chunk;
+        }
+        pb.finish();
     }
 }

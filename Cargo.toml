@@ -5,10 +5,13 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0.75", features = ["backtrace"] }
+async-stream = "0.3.5"
+bytes = "1.5.0"
 clap = { version = "4.4.0", features = ["derive", "env"] }
 dotenv = { version = "0.15.0" }
 env_logger = "0.10.0"
 futures = "0.3.28"
+indicatif = "0.17.6"
 log = "0.4.20"
 mime_guess = "2.0.4"
 reqwest = { version = "0.11.20", features = ["json", "rustls-tls", "stream", "gzip"], default-features = false }
