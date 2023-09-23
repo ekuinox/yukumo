@@ -1,10 +1,8 @@
-mod notion;
+pub mod notion;
 
 use std::path::PathBuf;
 
 use anyhow::{ensure, Context, Result};
-use clap::Parser;
-use dotenv::dotenv;
 use futures::{Stream, StreamExt};
 use indicatif::ProgressBar;
 use reqwest::{header, Body};
@@ -14,92 +12,16 @@ use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::notion::{
-    to_dashed_id, GetSignedFileUrlsRequest, GetSignedFileUrlsRequestUrl, GetSignedFileUrlsResponse,
-    GetUploadFileUrlResponse, LoadPageChunkResponse, Notion, Operation, OperationCommand,
-    OperationPointer, PageDataResponse, Transaction,
+    client::Notion,
+    types::{
+        GetSignedFileUrlsRequest, GetSignedFileUrlsRequestUrl, GetSignedFileUrlsResponse,
+        GetUploadFileUrlResponse, Operation, OperationCommand, OperationPointer, PageDataResponse,
+        Transaction,
+    },
 };
 
-#[derive(Parser, Debug)]
-pub enum Cli {
-    Upload {
-        #[clap(short, long, env = "NOTION_PAGE_ID")]
-        page_id: String,
-
-        #[clap(short, long, env = "NOTION_TOKEN_V2")]
-        token_v2: String,
-
-        #[clap(short, long, env = "USER_AGENT")]
-        user_agent: Option<String>,
-
-        path: PathBuf,
-    },
-    Download {
-        #[clap(short, long, env = "NOTION_PAGE_ID")]
-        page_id: String,
-
-        #[clap(short, long, env = "NOTION_TOKEN_V2")]
-        token_v2: String,
-
-        #[clap(short, long, env = "NOTION_FILE_TOKEN")]
-        file_token: String,
-
-        #[clap(short, long, env = "USER_AGENT")]
-        user_agent: Option<String>,
-
-        #[clap(long)]
-        url: Option<String>,
-
-        #[clap(long)]
-        space_id: Option<String>,
-
-        #[clap(long)]
-        block_id: Option<String>,
-
-        path: PathBuf,
-    },
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let _ = dotenv();
-
-    let cli = Cli::parse();
-
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "info");
-    }
-    env_logger::init();
-
-    match cli {
-        Cli::Upload {
-            page_id,
-            token_v2,
-            user_agent,
-            path,
-        } => upload(page_id, token_v2, user_agent, path).await,
-        Cli::Download {
-            page_id,
-            token_v2,
-            file_token,
-            user_agent,
-            path,
-            url,
-            space_id,
-            block_id,
-        } => {
-            if let Some(((url, space_id), block_id)) = url.zip(space_id).zip(block_id) {
-                download_with_url(
-                    url, block_id, space_id, token_v2, file_token, user_agent, path,
-                )
-                .await
-            } else {
-                download(page_id, token_v2, file_token, user_agent, path).await
-            }
-        }
-    }
-}
-
-async fn download_with_url(
+/// URL を元にファイルをダウンロードする
+pub async fn download_with_url(
     url: String,
     block_id: String,
     space_id: String,
@@ -124,7 +46,7 @@ async fn download_with_url(
             }],
         })
         .await
-        .context("get signed urls")?;
+        .context("Failed to get signed urls")?;
 
     if !path.exists() {
         tokio::fs::create_dir_all(&path).await?;
@@ -156,108 +78,7 @@ async fn download_with_url(
     Ok(())
 }
 
-async fn download(
-    page_id: String,
-    token_v2: String,
-    file_token: String,
-    user_agent: Option<String>,
-    path: PathBuf,
-) -> Result<()> {
-    let client = Notion::new(token_v2, user_agent);
-    dbg!(client.user_agent());
-
-    let page_id = to_dashed_id(&page_id).context("parse page id")?;
-
-    // ページから spaceId を取り出す
-    let PageDataResponse {
-        owner_user_id,
-        page_id,
-        space_id,
-        ..
-    } = client.get_page_data(page_id).await.context("get page")?;
-
-    log::debug!("page_id = {page_id}");
-    log::debug!("space_id = {space_id}");
-    log::debug!(
-        "owner_user_id = {}",
-        owner_user_id.as_ref().map(String::as_str).unwrap_or("")
-    );
-
-    // ページのブロックを読みだす
-    let LoadPageChunkResponse { record_map, .. } = client
-        .load_page_chunk_request(page_id.clone(), 0, 50, None)
-        .await
-        .context("load page chunk")?;
-
-    let urls = record_map
-        .blocks
-        .into_iter()
-        .flat_map(|(id, block)| {
-            block.value.rest.get("properties").and_then(|properties| {
-                properties
-                    .get("source")
-                    .and_then(|source| {
-                        source.get(0).and_then(|source| {
-                            source
-                                .get(0)
-                                .and_then(|o| o.as_str().map(|s| s.to_string()))
-                        })
-                    })
-                    .map(|url| (id, url))
-            })
-        })
-        .map(|(id, url)| GetSignedFileUrlsRequestUrl {
-            url,
-            permission_record: OperationPointer {
-                table: "block".to_string(),
-                id,
-                space_id: space_id.clone(),
-            },
-            use_s3_url: false,
-        })
-        .collect::<Vec<_>>();
-
-    if urls.is_empty() {
-        log::info!("Not found file urls");
-        return Ok(());
-    }
-
-    let GetSignedFileUrlsResponse { signed_urls } = client
-        .get_signed_file_urls(&GetSignedFileUrlsRequest { urls })
-        .await
-        .context("get signed urls")?;
-
-    if !path.exists() {
-        tokio::fs::create_dir_all(&path).await?;
-    }
-
-    let file_token = format!("file_token={file_token}");
-    for url in signed_urls {
-        let res = reqwest::Client::builder()
-            .build()?
-            .get(&url)
-            .header(header::COOKIE, &file_token)
-            .send()
-            .await?;
-        ensure!(res.status().is_success());
-        if let Some(s) = res
-            .url()
-            .path_segments()
-            .and_then(|segments| segments.last())
-        {
-            let path = path.join(s);
-            let bytes = res.bytes().await?;
-            tokio::fs::write(&path, bytes).await?;
-            log::info!("Saved {path:?}");
-        }
-
-        log::info!("- {url}");
-    }
-
-    Ok(())
-}
-
-async fn upload(
+pub async fn upload(
     page_id: String,
     token_v2: String,
     user_agent: Option<String>,
@@ -537,4 +358,26 @@ fn create_upload_stream(
         }
         pb.finish();
     }
+}
+
+/// id をダッシュでつなげたやつにする
+pub fn to_dashed_id(id: &str) -> Result<String> {
+    let id = id.replace('-', "");
+    ensure!(id.len() == 32);
+
+    let a = &id[0..8];
+    let b = &id[8..12];
+    let c = &id[12..16];
+    let d = &id[16..20];
+    let e = &id[20..];
+    Ok(format!("{a}-{b}-{c}-{d}-{e}"))
+}
+
+#[test]
+fn test_to_dashed_id() {
+    const ID: &str = "2131b10cebf64938a1277089ff02dbe4";
+    assert_eq!(
+        to_dashed_id(ID).ok(),
+        Some("2131b10c-ebf6-4938-a127-7089ff02dbe4".to_string())
+    );
 }
