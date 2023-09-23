@@ -1,251 +1,161 @@
 pub mod notion;
 
-use std::path::PathBuf;
+use std::path::Path;
 
-use anyhow::{ensure, Context, Result};
-use futures::{Stream, StreamExt};
-use indicatif::ProgressBar;
-use reqwest::{header, Body};
+use anyhow::{bail, ensure, Context, Result};
+use reqwest::{header, Body, Response};
 use serde_json::json;
-use tokio::fs::File;
-use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::notion::{
     client::Notion,
     types::{
         GetSignedFileUrlsRequest, GetSignedFileUrlsRequestUrl, GetSignedFileUrlsResponse,
-        GetUploadFileUrlResponse, Operation, OperationCommand, OperationPointer, PageDataResponse,
-        Transaction,
+        GetUploadFileUrlResponse, Operation, OperationCommand, OperationPointer, Transaction,
     },
 };
 
-/// URL を元にファイルをダウンロードする
-pub async fn download_with_url(
-    url: String,
-    block_id: String,
-    space_id: String,
-    token_v2: String,
-    file_token: String,
-    user_agent: Option<String>,
-    path: PathBuf,
-) -> Result<()> {
-    let client = Notion::new(token_v2, user_agent);
-    dbg!(client.user_agent());
-
-    let GetSignedFileUrlsResponse { signed_urls } = client
-        .get_signed_file_urls(&GetSignedFileUrlsRequest {
-            urls: vec![GetSignedFileUrlsRequestUrl {
-                url,
-                use_s3_url: false,
-                permission_record: OperationPointer {
-                    table: "block".to_string(),
-                    id: block_id,
-                    space_id,
-                },
-            }],
+/// 署名付きURLを取得する
+/// urls の各要素は `(url, block_id, space_id)` であること
+pub async fn get_signed_file_urls(
+    client: &Notion,
+    urls: &[(&str, &str, &str)],
+) -> Result<Vec<String>> {
+    let urls = urls
+        .into_iter()
+        .map(|(url, block_id, space_id)| GetSignedFileUrlsRequestUrl {
+            url: url.to_string(),
+            use_s3_url: false,
+            permission_record: OperationPointer {
+                table: "block".to_string(),
+                id: block_id.to_string(),
+                space_id: space_id.to_string(),
+            },
         })
+        .collect();
+    let GetSignedFileUrlsResponse { signed_urls } = client
+        .get_signed_file_urls(&GetSignedFileUrlsRequest { urls })
         .await
         .context("Failed to get signed urls")?;
 
-    if !path.exists() {
-        tokio::fs::create_dir_all(&path).await?;
-    }
-
-    let file_token = format!("file_token={file_token}");
-    for url in signed_urls {
-        let res = reqwest::Client::builder()
-            .build()?
-            .get(&url)
-            .header(header::COOKIE, &file_token)
-            .send()
-            .await?;
-        ensure!(res.status().is_success());
-        if let Some(s) = res
-            .url()
-            .path_segments()
-            .and_then(|segments| segments.last())
-        {
-            let path = path.join(s);
-            let bytes = res.bytes().await?;
-            tokio::fs::write(&path, bytes).await?;
-            log::info!("Saved {path:?}");
-        }
-
-        log::info!("- {url}");
-    }
-
-    Ok(())
+    Ok(signed_urls)
 }
 
-pub async fn upload(
-    page_id: String,
-    token_v2: String,
-    user_agent: Option<String>,
-    path: PathBuf,
-) -> Result<()> {
-    let client = Notion::new(token_v2, user_agent);
-    dbg!(client.user_agent());
+/// 署名付きURLを使ってファイルを取得する
+pub async fn get_file_by_signed_url(url: &str, file_token: &str) -> Result<Response> {
+    let res = reqwest::Client::builder()
+        .build()?
+        .get(url)
+        .header(header::COOKIE, file_token)
+        .send()
+        .await?;
+    ensure!(res.status().is_success());
+    Ok(res)
+}
 
-    let page_id = to_dashed_id(&page_id).context("parse page id")?;
-
-    // ページから spaceId を取り出す
-    let PageDataResponse {
-        owner_user_id,
-        page_id,
-        space_id,
-        ..
-    } = client.get_page_data(page_id).await.context("get page")?;
-
-    log::debug!("page_id = {page_id}");
-    log::debug!("space_id = {space_id}");
-    log::debug!(
-        "owner_user_id = {}",
-        owner_user_id.as_ref().map(String::as_str).unwrap_or("")
-    );
-
-    // 最初にブロックを作っとかないといけないっぽい
+/// 新しいブロックを生成する
+pub async fn create_new_block(client: &Notion, space_id: &str, page_id: &str) -> Result<String> {
     let new_block_id = Uuid::new_v4().to_string();
     let new_block_pointer = OperationPointer {
         table: "block".to_string(),
         id: new_block_id.clone(),
-        space_id: space_id.clone(),
+        space_id: space_id.to_string(),
     };
     log::debug!("new_block_id = {new_block_id}");
 
     client
         .save_transactions(vec![Transaction {
             id: Uuid::new_v4().to_string(),
-            space_id: space_id.clone(),
-            debug: [("userAction", "ListItemBlock.handleNativeDrop")]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+            space_id: space_id.to_string(),
+            debug: Default::default(),
             operations: vec![
                 Operation {
                     pointer: new_block_pointer.clone(),
                     path: Default::default(),
                     command: OperationCommand::Set,
                     args: [
-                        ("type", json!("embed")),
-                        ("space_id", json!(space_id.clone())),
-                        ("id", json!(new_block_id.clone())),
-                        ("version", json!(1)),
+                        ("type".to_string(), json!("embed")),
+                        ("space_id".to_string(), json!(space_id.clone())),
+                        ("id".to_string(), json!(new_block_id.clone())),
+                        ("version".to_string(), json!(1)),
                     ]
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect(),
+                    .into(),
                 },
-                // この辺多分なくても動作するっぽい
-                // `created_by_user_id` は操作できないと怒られることもある
-                // Operation {
-                //     pointer: new_block_pointer.clone(),
-                //     path: Default::default(),
-                //     command: OperationCommand::Update,
-                //     args: [
-                //         ("created_by_user_id", json!(owner_user_id.clone())),
-                //         ("created_by_table", json!("notion_user")),
-                //         ("created_time", json!(Utc::now().timestamp_millis())),
-                //         ("last_edited_time", json!(Utc::now().timestamp_millis())),
-                //         ("last_edited_by_id", json!(owner_user_id.clone())),
-                //         ("last_edited_by_table", json!("notion_user")),
-                //     ]
-                //     .into_iter()
-                //     .map(|(k, v)| (k.to_string(), v))
-                //     .collect(),
-                // },
                 Operation {
                     pointer: new_block_pointer.clone(),
                     path: Default::default(),
                     command: OperationCommand::Update,
                     args: [
-                        ("parent_id", json!(page_id.clone())),
-                        ("parent_table", json!("block")),
-                        ("alive", json!(true)),
+                        ("parent_id".to_string(), json!(page_id.to_string())),
+                        ("parent_table".to_string(), json!("block")),
+                        ("alive".to_string(), json!(true)),
                     ]
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect(),
+                    .into(),
                 },
                 Operation {
                     pointer: OperationPointer {
                         table: "block".to_string(),
-                        id: page_id.clone(),
-                        space_id: space_id.clone(),
+                        id: page_id.to_string(),
+                        space_id: space_id.to_string(),
                     },
-                    path: ["content"].into_iter().map(ToString::to_string).collect(),
+                    path: ["content".to_string()].into(),
                     command: OperationCommand::ListAfter,
-                    args: [("id", json!(new_block_id.clone()))]
-                        .into_iter()
-                        .map(|(k, v)| (k.to_string(), v))
-                        .collect(),
+                    args: [("id".to_string(), json!(new_block_id.clone()))].into(),
                 },
-                // Operation {
-                //     pointer: new_block_pointer.clone(),
-                //     path: Default::default(),
-                //     command: OperationCommand::Update,
-                //     args: [("last_edited_time", json!(Utc::now().timestamp_millis()))]
-                //         .into_iter()
-                //         .map(|(k, v)| (k.to_string(), v))
-                //         .collect(),
-                // },
             ],
         }])
         .await
-        .context("create new block")?;
-    log::debug!("created new block");
+        .context("Failed to create new block")?;
+    log::debug!("New block {new_block_id} created.");
 
-    // でそれのフォーマットとかを定めて
-    // error => Unsaved transactions: User does not have edit access to record
-    // 前のブロック操作でページへのアクセス権を剥奪されちゃってる なんで？
     client
         .save_transactions(vec![Transaction {
             id: Uuid::new_v4().to_string(),
-            space_id: space_id.clone(),
-            debug: [("userAction", "embedBlockActions.initializeFormat")]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            operations: vec![
-                Operation {
-                    pointer: new_block_pointer.clone(),
-                    path: ["format"].into_iter().map(ToString::to_string).collect(),
-                    command: OperationCommand::Update,
-                    args: [
-                        ("block_width", json!(120)),
-                        ("block_height", serde_json::Value::Null),
-                        ("block_preserve_scale", json!(true)),
-                        ("block_full_width", json!(false)),
-                        ("block_page_width", json!(false)),
-                        // ("block_aspect_ratio", json!(0.63232421875)),
-                    ]
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect(),
-                },
-                // Operation {
-                //     pointer: new_block_pointer.clone(),
-                //     path: Default::default(),
-                //     command: OperationCommand::Update,
-                //     args: [("last_edited_time", json!(Utc::now().timestamp_millis()))]
-                //         .into_iter()
-                //         .map(|(k, v)| (k.to_string(), v))
-                //         .collect(),
-                // },
-            ],
+            space_id: space_id.to_string(),
+            debug: Default::default(),
+            operations: vec![Operation {
+                pointer: new_block_pointer.clone(),
+                path: ["format".to_string()].into(),
+                command: OperationCommand::Update,
+                args: [
+                    ("block_width".to_string(), json!(120)),
+                    ("block_height".to_string(), serde_json::Value::Null),
+                    ("block_preserve_scale".to_string(), json!(true)),
+                    ("block_full_width".to_string(), json!(false)),
+                    ("block_page_width".to_string(), json!(false)),
+                ]
+                .into(),
+            }],
         }])
         .await
-        .context("format new block")?;
-    log::debug!("formated new block");
+        .context("Failed to format new block")?;
+    log::debug!("New block {new_block_id} formatted.");
 
+    Ok(new_block_id)
+}
+
+/// 署名付きURLを取得する
+/// `(url, signed_get_url, signed_put_url, name, mime, content_length)` をタプルで返す
+pub async fn get_signed_put_file(
+    client: &Notion,
+    path: &Path,
+    block_id: &str,
+    space_id: &str,
+) -> Result<(String, String, String, String, String, u64)> {
     // ファイルをアップロードして
-    let content_length = tokio::fs::metadata(&path)
+    let content_length = tokio::fs::metadata(path)
         .await
-        .context("get metadata")?
+        .context("Failed to get metadata")?
         .len();
     let mime = mime_guess::from_path(&path);
     let mime = mime.first_or_text_plain().to_string();
-    let name = path.file_name().unwrap().to_str().unwrap().to_string();
+    let Some(name) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(ToString::to_string)
+    else {
+        bail!("Failed to get file name");
+    };
     let GetUploadFileUrlResponse {
         signed_get_url,
         signed_put_url,
@@ -256,38 +166,39 @@ pub async fn upload(
             name.clone(),
             mime.clone(),
             content_length as usize,
-            new_block_id.clone(),
-            space_id.clone(),
+            block_id.to_string(),
+            space_id.to_string(),
         )
         .await
-        .context("get upload file url")?;
+        .context("Failed to get upload file url")?;
 
-    log::info!("block_id = {new_block_id}");
-    log::info!("space_id = {space_id}");
-    log::info!("url = {url}");
-    log::info!("signed_get_url = {signed_get_url}");
-    log::debug!("signed_put_url = {signed_put_url}");
+    Ok((
+        url,
+        signed_get_url,
+        signed_put_url,
+        name,
+        mime,
+        content_length,
+    ))
+}
 
+/// 署名付きURLを使ってファイルをアップロードする
+pub async fn put_to_signed_url(
+    signed_put_url: &str,
+    content_length: u64,
+    mime: &str,
+    body: impl Into<Body>,
+) -> Result<()> {
     {
         let client = reqwest::Client::builder().gzip(true).build()?;
-        let file = File::open(&path)
-            .await
-            .context("Failed to open input file")?;
-
-        let pb = ProgressBar::new(content_length);
-        let stream = create_upload_stream(file, pb);
-
         let res = client
-            .put(&signed_put_url)
-            .header(
-                header::CONTENT_LENGTH,
-                std::fs::metadata(&path).unwrap().len(),
-            )
+            .put(signed_put_url)
+            .header(header::CONTENT_LENGTH, content_length)
             .header(header::CONTENT_TYPE, mime)
-            .body(Body::wrap_stream(stream))
+            .body(body)
             .send()
             .await
-            .context("request")?;
+            .with_context(|| format!("Failed to request {signed_put_url}"))?;
         ensure!(
             res.status().is_success(),
             "{} {:?}",
@@ -295,37 +206,49 @@ pub async fn upload(
             res.text().await
         );
 
-        log::debug!("Put s3 OK");
+        log::debug!("Put signed url");
     }
 
-    // ブロックにファイルをくっつける
+    Ok(())
+}
+
+/// ブロックに対してファイルをアタッチする
+pub async fn attach_file_to_block(
+    client: &Notion,
+    block_id: &str,
+    space_id: &str,
+    file_url: &str,
+    file_name: &str,
+    content_length: u64,
+) -> Result<()> {
+    let new_block_pointer = OperationPointer {
+        table: "block".to_string(),
+        id: block_id.to_string(),
+        space_id: space_id.to_string(),
+    };
+
     client
         .save_transactions(vec![Transaction {
             id: Uuid::new_v4().to_string(),
-            space_id: space_id.clone(),
-            debug: [("userAction", "embedBlockActions.initializeEmbedBlock")]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+            space_id: space_id.to_string(),
+            debug: Default::default(),
             operations: vec![Operation {
                 pointer: new_block_pointer.clone(),
-                path: ["properties"]
-                    .into_iter()
-                    .map(ToString::to_string)
-                    .collect(),
+                path: ["properties".to_string()].into(),
                 command: OperationCommand::Update,
                 args: [
-                    ("source", json!([[url.clone()]])),
-                    ("title", json!([[name.clone()]])),
-                    ("size", json!([[size_to_text(content_length as usize)]])),
+                    ("source".to_string(), json!([[file_url.to_string()]])),
+                    ("title".to_string(), json!([[file_name.to_string()]])),
+                    (
+                        "size".to_string(),
+                        json!([[size_to_text(content_length as usize)]]),
+                    ),
                 ]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
+                .into(),
             }],
         }])
         .await
-        .context("insert file to block")?;
+        .context("Failed to insert file to block")?;
 
     Ok(())
 }
@@ -342,21 +265,6 @@ fn size_to_text(bytes: usize) -> String {
         format!("{:.1}GB", bytes as f64 / UNIT.pow(3) as f64)
     } else {
         format!("{:.1}TB", bytes as f64 / UNIT.pow(4) as f64)
-    }
-}
-
-fn create_upload_stream(
-    file: File,
-    pb: ProgressBar,
-) -> impl Stream<Item = anyhow::Result<bytes::Bytes>> + 'static {
-    async_stream::try_stream! {
-        let mut stream = ReaderStream::new(file);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
-            pb.inc(chunk.len() as u64);
-            yield chunk;
-        }
-        pb.finish();
     }
 }
 

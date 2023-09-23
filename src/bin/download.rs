@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 use dotenv::dotenv;
-use notionfs::download_with_url;
+use notionfs::{get_file_by_signed_url, get_signed_file_urls, notion::client::Notion};
 
 #[derive(Parser, Debug)]
 pub struct Cli {
@@ -47,8 +47,31 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    download_with_url(
-        url, block_id, space_id, token_v2, file_token, user_agent, path,
-    )
-    .await
+    let client = Notion::new(token_v2, user_agent);
+    log::debug!("UserAgent = {}", client.user_agent());
+
+    let signed_urls = get_signed_file_urls(&client, &[(&url, &block_id, &space_id)]).await?;
+
+    if !path.exists() {
+        tokio::fs::create_dir_all(&path).await?;
+    }
+
+    let file_token = format!("file_token={file_token}");
+    for url in signed_urls {
+        let res = get_file_by_signed_url(&url, &file_token).await?;
+        if let Some(s) = res
+            .url()
+            .path_segments()
+            .and_then(|segments| segments.last())
+        {
+            let path = path.join(s);
+            let bytes = res.bytes().await?;
+            tokio::fs::write(&path, bytes).await?;
+            log::info!("Saved {path:?}");
+        }
+
+        log::info!("- {url}");
+    }
+
+    Ok(())
 }
