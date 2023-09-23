@@ -84,7 +84,13 @@ async fn main() -> Result<()> {
     let pb = ProgressBar::new(content_length);
     let stream = create_upload_stream(file, pb);
 
-    put_to_signed_url(&signed_put_url, content_length, &mime, Body::wrap_stream(stream)).await?;
+    put_to_signed_url(
+        &signed_put_url,
+        content_length,
+        &mime,
+        Body::wrap_stream(stream),
+    )
+    .await?;
 
     // ブロックにファイルをくっつける
     attach_file_to_block(
