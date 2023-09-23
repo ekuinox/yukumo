@@ -1,15 +1,13 @@
 [package]
 name = "notionfs"
-version = "0.1.0"
-edition = "2021"
+version = { workspace = true }
+edition = { workspace = true }
 
 [dependencies]
 anyhow = { workspace = true }
-async-stream = { workspace = true }
-futures = { workspace = true }
 log = { workspace = true }
 mime_guess = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = [
+reqwest = { workspace = true, features = [
     "json",
     "rustls-tls",
     "stream",
@@ -22,10 +20,12 @@ uuid = { workspace = true, features = ["v4", "fast-rng"] }
 
 [dev-dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
+async-stream = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 dotenv = { workspace = true }
 env_logger = { workspace = true }
+futures = { workspace = true }
 indicatif = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }

@@ -3,7 +3,7 @@ pub mod notion;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context, Result};
-use reqwest::{header, Body, Response};
+use reqwest::header;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -14,6 +14,8 @@ use crate::notion::{
         GetUploadFileUrlResponse, Operation, OperationCommand, OperationPointer, Transaction,
     },
 };
+
+pub use reqwest::{Body, Response};
 
 /// 署名付きURLを取得する
 /// urls の各要素は `(url, block_id, space_id)` であること
