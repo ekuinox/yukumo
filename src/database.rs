@@ -1,17 +1,5 @@
 use anyhow::{Context as _, Result};
-use sqlx::{prelude::*, Pool};
-
-#[cfg(feature = "postgres")]
-pub type Db = sqlx::Postgres;
-
-#[cfg(feature = "sqlite")]
-pub type Db = sqlx::Sqlite;
-
-#[cfg(feature = "postgres")]
-pub type DatabasePoolOptions = sqlx::postgres::PgPoolOptions;
-
-#[cfg(feature = "sqlite")]
-pub type DatabasePoolOptions = sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{any::{AnyPoolOptions, install_default_drivers}, prelude::*, AnyPool};
 
 #[derive(FromRow, Debug)]
 pub struct FileRow {
@@ -22,7 +10,7 @@ pub struct FileRow {
 }
 
 impl FileRow {
-    pub async fn query(pool: &Pool<Db>, name: &str) -> Result<Vec<FileRow>> {
+    pub async fn query(pool: &AnyPool, name: &str) -> Result<Vec<FileRow>> {
         let name = format!("%{name}%");
         let files = sqlx::query_as("SELECT * FROM files WHERE file_name LIKE ?")
             .bind(name)
@@ -32,7 +20,7 @@ impl FileRow {
         Ok(files)
     }
 
-    pub async fn find_one(pool: &Pool<Db>, file_name: &str) -> Result<FileRow> {
+    pub async fn find_one(pool: &AnyPool, file_name: &str) -> Result<FileRow> {
         let row = sqlx::query_as("SELECT * FROM files WHERE file_name = ?")
             .bind(&file_name)
             .fetch_one(pool)
@@ -41,7 +29,7 @@ impl FileRow {
         Ok(row)
     }
 
-    pub async fn insert(&self, pool: &Pool<Db>) -> Result<()> {
+    pub async fn insert(&self, pool: &AnyPool) -> Result<()> {
         let _ = sqlx::query(
             r#"
         INSERT INTO files (file_url, space_id, block_id, file_name)
@@ -59,8 +47,9 @@ impl FileRow {
     }
 }
 
-pub async fn create_pool(host: &str) -> Result<Pool<Db>> {
-    let pool = DatabasePoolOptions::new()
+pub async fn create_pool(host: &str) -> Result<AnyPool> {
+    install_default_drivers();
+    let pool = AnyPoolOptions::new()
         .max_connections(5)
         .connect(&host)
         .await

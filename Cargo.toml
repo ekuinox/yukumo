@@ -30,9 +30,10 @@ version = { workspace = true }
 edition = { workspace = true }
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "postgres", "mysql"]
 postgres = ["sqlx/postgres"]
 sqlite = ["sqlx/sqlite"]
+mysql = ["sqlx/mysql"]
 
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
