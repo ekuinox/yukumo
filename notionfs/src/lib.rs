@@ -48,7 +48,7 @@ pub async fn get_file_by_signed_url(url: &str, file_token: &str) -> Result<Respo
     let res = reqwest::Client::builder()
         .build()?
         .get(url)
-        .header(header::COOKIE, file_token)
+        .header(header::COOKIE, format!("file_token={file_token}"))
         .send()
         .await?;
     ensure!(res.status().is_success());

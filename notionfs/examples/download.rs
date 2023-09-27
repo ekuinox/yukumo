@@ -56,7 +56,6 @@ async fn main() -> Result<()> {
         tokio::fs::create_dir_all(&path).await?;
     }
 
-    let file_token = format!("file_token={file_token}");
     for url in signed_urls {
         let res = get_file_by_signed_url(&url, &file_token).await?;
         if let Some(s) = res

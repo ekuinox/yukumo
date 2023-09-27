@@ -8,7 +8,8 @@ use futures::{Stream, StreamExt};
 use home::home_dir;
 use indicatif::ProgressBar;
 use notionfs::{
-    attach_file_to_block, create_new_block, get_signed_put_file,
+    attach_file_to_block, create_new_block, get_file_by_signed_url, get_signed_file_urls,
+    get_signed_put_file,
     notion::{client::Notion, types::PageDataResponse},
     put_to_signed_url, to_dashed_id, Body,
 };
@@ -20,8 +21,17 @@ use crate::config::Config;
 
 #[derive(Parser)]
 enum Subcommand {
-    Put { source: PathBuf },
-    Query {},
+    Put {
+        source: PathBuf,
+    },
+    Query {
+        name: String,
+    },
+    Get {
+        file_name: String,
+        #[clap(short, long, default_value = "./")]
+        out_dir: PathBuf,
+    },
 }
 
 #[derive(Parser)]
@@ -144,12 +154,46 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to insert row")?;
         }
-        Subcommand::Query {} => {
-            let files: Vec<FileRow> = sqlx::query_as("SELECT * from files")
+        Subcommand::Query { name } => {
+            let name = format!("%{name}%");
+            let files: Vec<FileRow> = sqlx::query_as("SELECT * FROM files WHERE file_name LIKE ?")
+                .bind(&name)
                 .fetch_all(&pool)
                 .await
                 .context("Failed to select files")?;
             dbg!(&files);
+        }
+        Subcommand::Get { file_name, out_dir } => {
+            let FileRow {
+                file_url,
+                space_id,
+                block_id,
+                file_name,
+            } = sqlx::query_as("SELECT * FROM files WHERE file_name = ?")
+                .bind(&file_name)
+                .fetch_one(&pool)
+                .await
+                .context("Failed to get file")?;
+
+            let client = Notion::new(config.notion.token_v2, config.notion.user_agent);
+            log::debug!("UserAgent = {}", client.user_agent());
+
+            let signed_urls =
+                get_signed_file_urls(&client, &[(&file_url, &block_id, &space_id)]).await?;
+
+            if !out_dir.exists() {
+                tokio::fs::create_dir_all(&out_dir).await?;
+            }
+
+            for url in signed_urls {
+                let res = get_file_by_signed_url(&url, &config.notion.file_token).await?;
+                let path = out_dir.join(&file_name);
+                let bytes = res.bytes().await?;
+                tokio::fs::write(&path, bytes).await?;
+                log::info!("Saved {path:?}");
+
+                log::info!("- {url}");
+            }
         }
     }
 
