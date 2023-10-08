@@ -42,7 +42,11 @@ indicatif = { workspace = true }
 log = { workspace = true }
 notionfs = { path = "./notionfs" }
 serde = { workspace = true, features = ["derive"] }
+shadow-rs = "0.24.1"
 sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "postgres"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }
 toml = { workspace = true }
+
+[build-dependencies]
+shadow-rs = "0.24.1"

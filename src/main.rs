@@ -15,6 +15,7 @@ use notionfs::{
     notion::{client::Notion, types::PageDataResponse},
     put_to_signed_url, to_dashed_id, Body,
 };
+use shadow_rs::shadow;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
@@ -23,7 +24,10 @@ use crate::{
     database::{create_pool, FileRow},
 };
 
+shadow!(meta);
+
 #[derive(Parser)]
+#[clap(version = meta::PKG_VERSION, long_version = meta::VERSION)]
 struct Cli {
     #[clap(short, long, global = true, env = "YUKUMO_CONFIG")]
     config: Option<PathBuf>,
