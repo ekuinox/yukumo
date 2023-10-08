@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "notionfs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "yukumo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-stream",
