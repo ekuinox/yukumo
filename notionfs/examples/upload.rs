@@ -6,7 +6,7 @@ use dotenv::dotenv;
 use futures::{Stream, StreamExt};
 use indicatif::ProgressBar;
 use notionfs::{
-    attach_file_to_block, create_new_block, get_signed_put_file,
+    attach_file_to_block, create_new_block, get_file_stem, get_signed_put_file,
     notion::{client::Notion, types::PageDataResponse},
     put_to_signed_url, to_dashed_id,
 };
@@ -67,9 +67,11 @@ async fn main() -> Result<()> {
     // 最初にブロックを作っとかないといけないっぽい
     let new_block_id = create_new_block(&client, &space_id, &page_id).await?;
 
+    let name = get_file_stem(&path)?;
+
     // 署名付きアップロードURLを取得して
-    let (url, signed_get_url, signed_put_url, name, mime, content_length) =
-        get_signed_put_file(&client, &path, &new_block_id, &space_id).await?;
+    let (url, signed_get_url, signed_put_url, mime, content_length) =
+        get_signed_put_file(&client, &path, &name, &new_block_id, &space_id).await?;
 
     log::info!("block_id = {new_block_id}");
     log::info!("space_id = {space_id}");

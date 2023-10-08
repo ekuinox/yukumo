@@ -10,8 +10,8 @@ use futures::{Stream, StreamExt};
 use home::home_dir;
 use indicatif::ProgressBar;
 use notionfs::{
-    attach_file_to_block, create_new_block, get_file_by_signed_url, get_signed_file_urls,
-    get_signed_put_file,
+    attach_file_to_block, create_new_block, get_file_by_signed_url, get_file_stem,
+    get_signed_file_urls, get_signed_put_file,
     notion::{client::Notion, types::PageDataResponse},
     put_to_signed_url, to_dashed_id, Body,
 };
@@ -36,14 +36,18 @@ struct Cli {
 enum Subcommand {
     Put {
         source: PathBuf,
+
+        #[clap(short = 'n', long = "name")]
+        file_name: Option<String>,
     },
     Query {
         prefix: String,
     },
     Get {
         file_name: String,
-        #[clap(short, long, default_value = "./")]
-        out_dir: PathBuf,
+
+        #[clap(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -65,20 +69,19 @@ async fn main() -> Result<()> {
     log::info!("Config path = {path:?}");
 
     match cli.subcommand {
-        Subcommand::Put { source } => put(config, source).await,
+        Subcommand::Put { source, file_name } => put(config, source, file_name).await,
         Subcommand::Query { prefix } => query(config, prefix).await,
-        Subcommand::Get { file_name, out_dir } => get(config, file_name, out_dir).await,
+        Subcommand::Get { file_name, output } => get(config, file_name, output).await,
     }
 }
 
-async fn get(config: Config, file_name: String, out_dir: PathBuf) -> Result<()> {
+async fn get(config: Config, file_name: String, output: PathBuf) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
 
     let FileRow {
         file_url,
         space_id,
         block_id,
-        file_name,
         ..
     } = FileRow::find_one(&pool, &file_name).await?;
 
@@ -87,16 +90,15 @@ async fn get(config: Config, file_name: String, out_dir: PathBuf) -> Result<()> 
 
     let signed_urls = get_signed_file_urls(&client, &[(&file_url, &block_id, &space_id)]).await?;
 
-    if !out_dir.exists() {
-        tokio::fs::create_dir_all(&out_dir).await?;
+    if let Some(parent) = output.parent() {
+        tokio::fs::create_dir_all(&parent).await?;
     }
 
     for url in signed_urls {
         let res = get_file_by_signed_url(&url, &config.notion.file_token).await?;
-        let path = out_dir.join(&file_name);
         let bytes = res.bytes().await?;
-        tokio::fs::write(&path, bytes).await?;
-        log::info!("Saved {path:?}");
+        tokio::fs::write(&output, bytes).await?;
+        log::info!("Saved {output:?}");
 
         log::info!("- {url}");
     }
@@ -104,7 +106,7 @@ async fn get(config: Config, file_name: String, out_dir: PathBuf) -> Result<()> 
     Ok(())
 }
 
-async fn put(config: Config, source: PathBuf) -> Result<()> {
+async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
 
     let client = Notion::new(config.notion.token_v2, config.notion.user_agent);
@@ -129,9 +131,15 @@ async fn put(config: Config, source: PathBuf) -> Result<()> {
     // 最初にブロックを作っとかないといけないっぽい
     let new_block_id = create_new_block(&client, &space_id, &page_id).await?;
 
+    let name = if let Some(name) = name {
+        name
+    } else {
+        get_file_stem(&source)?
+    };
+
     // 署名付きアップロードURLを取得して
-    let (url, signed_get_url, signed_put_url, name, mime, content_length) =
-        get_signed_put_file(&client, &source, &new_block_id, &space_id).await?;
+    let (url, signed_get_url, signed_put_url, mime, content_length) =
+        get_signed_put_file(&client, &source, &name, &new_block_id, &space_id).await?;
 
     log::info!("block_id = {new_block_id}");
     log::info!("space_id = {space_id}");

@@ -136,21 +136,8 @@ pub async fn create_new_block(client: &Notion, space_id: &str, page_id: &str) ->
     Ok(new_block_id)
 }
 
-/// 署名付きURLを取得する
-/// `(url, signed_get_url, signed_put_url, name, mime, content_length)` をタプルで返す
-pub async fn get_signed_put_file(
-    client: &Notion,
-    path: &Path,
-    block_id: &str,
-    space_id: &str,
-) -> Result<(String, String, String, String, String, u64)> {
-    // ファイルをアップロードして
-    let content_length = tokio::fs::metadata(path)
-        .await
-        .context("Failed to get metadata")?
-        .len();
-    let mime = mime_guess::from_path(&path);
-    let mime = mime.first_or_text_plain().to_string();
+/// ファイル名を取得する
+pub fn get_file_stem(path: &Path) -> Result<String> {
     let Some(name) = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -158,6 +145,25 @@ pub async fn get_signed_put_file(
     else {
         bail!("Failed to get file name");
     };
+    Ok(name)
+}
+
+/// 署名付きURLを取得する
+/// `(url, signed_get_url, signed_put_url, name, mime, content_length)` をタプルで返す
+pub async fn get_signed_put_file(
+    client: &Notion,
+    path: &Path,
+    name: &str,
+    block_id: &str,
+    space_id: &str,
+) -> Result<(String, String, String, String, u64)> {
+    // ファイルをアップロードして
+    let content_length = tokio::fs::metadata(path)
+        .await
+        .context("Failed to get metadata")?
+        .len();
+    let mime = mime_guess::from_path(&path);
+    let mime = mime.first_or_text_plain().to_string();
     let GetUploadFileUrlResponse {
         signed_get_url,
         signed_put_url,
@@ -165,7 +171,7 @@ pub async fn get_signed_put_file(
         ..
     } = client
         .get_upload_file_url(
-            name.clone(),
+            name.to_string(),
             mime.clone(),
             content_length as usize,
             block_id.to_string(),
@@ -174,14 +180,7 @@ pub async fn get_signed_put_file(
         .await
         .context("Failed to get upload file url")?;
 
-    Ok((
-        url,
-        signed_get_url,
-        signed_put_url,
-        name,
-        mime,
-        content_length,
-    ))
+    Ok((url, signed_get_url, signed_put_url, mime, content_length))
 }
 
 /// 署名付きURLを使ってファイルをアップロードする
