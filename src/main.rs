@@ -25,7 +25,7 @@ use crate::{
 
 #[derive(Parser)]
 struct Cli {
-    #[clap(short, long, global = true)]
+    #[clap(short, long, global = true, env = "YUKUMO_CONFIG")]
     config: Option<PathBuf>,
 
     #[clap(subcommand)]
@@ -126,10 +126,7 @@ async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()
 
     log::debug!("page_id = {page_id}");
     log::debug!("space_id = {space_id}");
-    log::debug!(
-        "owner_user_id = {}",
-        owner_user_id.as_deref().unwrap_or("")
-    );
+    log::debug!("owner_user_id = {}", owner_user_id.as_deref().unwrap_or(""));
 
     // 最初にブロックを作っとかないといけないっぽい
     let new_block_id = create_new_block(&client, &space_id, &page_id).await?;

@@ -34,7 +34,7 @@ anyhow = { workspace = true, features = ["backtrace"] }
 async-stream = { workspace = true }
 bytes = { workspace = true }
 chrono = { version = "0.4.31", features = ["serde"] }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 env_logger = { workspace = true }
 futures = { workspace = true }
 home = "0.5.5"
