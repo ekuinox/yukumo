@@ -3,8 +3,8 @@ mod database;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use chrono::Utc;
+use anyhow::{bail, Context, Result};
+use chrono::{Local, Utc};
 use clap::Parser;
 use futures::{Stream, StreamExt};
 use home::home_dir;
@@ -64,9 +64,12 @@ async fn main() -> Result<()> {
     let config =
         Config::open(&path).with_context(|| format!("Failed to open config = {path:?}"))?;
 
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "yukumo=info");
+    }
     env_logger::init();
 
-    log::info!("Config path = {path:?}");
+    log::debug!("Config path = {path:?}");
 
     match cli.subcommand {
         Subcommand::Put { source, file_name } => put(config, source, file_name).await,
@@ -100,7 +103,7 @@ async fn get(config: Config, file_name: String, output: PathBuf) -> Result<()> {
         tokio::fs::write(&output, bytes).await?;
         log::info!("Saved {output:?}");
 
-        log::info!("- {url}");
+        log::debug!("- {url}");
     }
 
     Ok(())
@@ -125,7 +128,7 @@ async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()
     log::debug!("space_id = {space_id}");
     log::debug!(
         "owner_user_id = {}",
-        owner_user_id.as_ref().map(String::as_str).unwrap_or("")
+        owner_user_id.as_deref().unwrap_or("")
     );
 
     // 最初にブロックを作っとかないといけないっぽい
@@ -136,6 +139,10 @@ async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()
     } else {
         get_file_stem(&source)?
     };
+
+    if FileRow::is_exists(&pool, &name).await? {
+        bail!("file_name ({name}) is already exists.");
+    }
 
     // 署名付きアップロードURLを取得して
     let (url, signed_get_url, signed_put_url, mime, content_length) =
@@ -188,13 +195,35 @@ async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()
 
     row.insert(&pool).await?;
 
+    log::info!(
+        "- {}: {} ({})",
+        row.file_name,
+        row.origin_file_path,
+        row.origin_file_path
+    );
+
     Ok(())
 }
 
 async fn query(config: Config, prefix: String) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
     let files = FileRow::query(&pool, &prefix).await?;
-    dbg!(&files);
+    for FileRow {
+        file_name,
+        origin_file_path,
+        created_at,
+        ..
+    } in files
+    {
+        log::info!(
+            "- {file_name}: {origin_file_path} ({})",
+            created_at
+                .and_local_timezone(Local)
+                .single()
+                .unwrap()
+                .to_rfc3339()
+        );
+    }
     Ok(())
 }
 

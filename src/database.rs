@@ -33,11 +33,21 @@ impl FileRow {
 
     pub async fn find_one(pool: &PgPool, file_name: &str) -> Result<FileRow> {
         let row = sqlx::query_as(r#"SELECT * FROM files WHERE file_name = $1"#)
-            .bind(&file_name)
+            .bind(file_name)
             .fetch_one(pool)
             .await
             .context("Failed to get file")?;
         Ok(row)
+    }
+
+    pub async fn is_exists(pool: &PgPool, file_name: &str) -> Result<bool> {
+        let (exists,): (bool,) =
+            sqlx::query_as(r#"SELECT EXISTS (SELECT * FROM files WHERE file_name = $1)"#)
+                .bind(file_name)
+                .fetch_one(pool)
+                .await
+                .context("Failed to count files")?;
+        Ok(exists)
     }
 
     pub async fn insert(&self, pool: &PgPool) -> Result<()> {
@@ -52,7 +62,7 @@ impl FileRow {
         .bind(&self.space_id)
         .bind(&self.block_id)
         .bind(&self.origin_file_path)
-        .bind(&self.created_at)
+        .bind(self.created_at)
         .execute(pool)
         .await
         .context("Failed to insert row")?;
@@ -63,7 +73,7 @@ impl FileRow {
 pub async fn create_pool(host: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&host)
+        .connect(host)
         .await
         .with_context(|| format!("Failed to connect {host}"))?;
     sqlx::migrate!()
