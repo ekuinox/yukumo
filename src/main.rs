@@ -4,6 +4,7 @@ mod database;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::Parser;
 use futures::{Stream, StreamExt};
 use home::home_dir;
@@ -37,7 +38,7 @@ enum Subcommand {
         source: PathBuf,
     },
     Query {
-        name: String,
+        prefix: String,
     },
     Get {
         file_name: String,
@@ -65,7 +66,7 @@ async fn main() -> Result<()> {
 
     match cli.subcommand {
         Subcommand::Put { source } => put(config, source).await,
-        Subcommand::Query { name } => query(config, name).await,
+        Subcommand::Query { prefix } => query(config, prefix).await,
         Subcommand::Get { file_name, out_dir } => get(config, file_name, out_dir).await,
     }
 }
@@ -78,6 +79,7 @@ async fn get(config: Config, file_name: String, out_dir: PathBuf) -> Result<()> 
         space_id,
         block_id,
         file_name,
+        ..
     } = FileRow::find_one(&pool, &file_name).await?;
 
     let client = Notion::new(config.notion.token_v2, config.notion.user_agent);
@@ -105,7 +107,6 @@ async fn get(config: Config, file_name: String, out_dir: PathBuf) -> Result<()> 
 async fn put(config: Config, source: PathBuf) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
 
-    let path = source;
     let client = Notion::new(config.notion.token_v2, config.notion.user_agent);
     let page_id = to_dashed_id(&config.notion.page_id).context("Failed to convert dashed id")?;
     let PageDataResponse {
@@ -130,7 +131,7 @@ async fn put(config: Config, source: PathBuf) -> Result<()> {
 
     // 署名付きアップロードURLを取得して
     let (url, signed_get_url, signed_put_url, name, mime, content_length) =
-        get_signed_put_file(&client, &path, &new_block_id, &space_id).await?;
+        get_signed_put_file(&client, &source, &new_block_id, &space_id).await?;
 
     log::info!("block_id = {new_block_id}");
     log::info!("space_id = {space_id}");
@@ -138,7 +139,7 @@ async fn put(config: Config, source: PathBuf) -> Result<()> {
     log::info!("signed_get_url = {signed_get_url}");
     log::debug!("signed_put_url = {signed_put_url}");
 
-    let file = File::open(&path)
+    let file = File::open(&source)
         .await
         .context("Failed to open input file")?;
 
@@ -169,6 +170,12 @@ async fn put(config: Config, source: PathBuf) -> Result<()> {
         space_id,
         block_id: new_block_id,
         file_name: name,
+        origin_file_path: source
+            .canonicalize()
+            .unwrap_or(source)
+            .to_string_lossy()
+            .to_string(),
+        created_at: Utc::now().naive_utc(),
     };
 
     row.insert(&pool).await?;
@@ -176,10 +183,9 @@ async fn put(config: Config, source: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn query(config: Config, name: String) -> Result<()> {
+async fn query(config: Config, prefix: String) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
-    let name = format!("%{name}%");
-    let files = FileRow::query(&pool, &name).await?;
+    let files = FileRow::query(&pool, &prefix).await?;
     dbg!(&files);
     Ok(())
 }

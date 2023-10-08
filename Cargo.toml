@@ -29,16 +29,11 @@ name = "yukumo"
 version = { workspace = true }
 edition = { workspace = true }
 
-[features]
-default = ["sqlite", "postgres", "mysql"]
-postgres = ["sqlx/postgres"]
-sqlite = ["sqlx/sqlite"]
-mysql = ["sqlx/mysql"]
-
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
 async-stream = { workspace = true }
 bytes = { workspace = true }
+chrono = { version = "0.4.31", features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 futures = { workspace = true }
@@ -47,7 +42,7 @@ indicatif = { workspace = true }
 log = { workspace = true }
 notionfs = { path = "./notionfs" }
 serde = { workspace = true, features = ["derive"] }
-sqlx = { version = "0.7", features = ["runtime-tokio"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "postgres"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }
 toml = { workspace = true }
