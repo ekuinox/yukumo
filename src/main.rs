@@ -41,6 +41,9 @@ enum Subcommand {
     Put {
         source: PathBuf,
 
+        #[clap(short, long)]
+        prefix: Option<String>,
+
         #[clap(short = 'n', long = "name")]
         file_name: Option<String>,
     },
@@ -76,7 +79,29 @@ async fn main() -> Result<()> {
     log::debug!("Config path = {path:?}");
 
     match cli.subcommand {
-        Subcommand::Put { source, file_name } => put(config, source, file_name).await,
+        Subcommand::Put {
+            source,
+            file_name,
+            prefix,
+        } => {
+            if source.is_file() {
+                put(config, source, file_name, prefix).await
+            } else if source.is_dir() {
+                let dir = source.read_dir().context("Failed to read directory.")?;
+                for entry in dir {
+                    if let Ok(entry) = entry {
+                        put(config.clone(), entry.path(), None, prefix.clone())
+                            .await
+                            .with_context(|| {
+                                format!("Failed to put {}.", entry.path().to_string_lossy())
+                            })?;
+                    }
+                }
+                Ok(())
+            } else {
+                bail!("Invalid path: {source:?}");
+            }
+        }
         Subcommand::Query { prefix } => query(config, prefix).await,
         Subcommand::Get { file_name, output } => get(config, file_name, output).await,
     }
@@ -113,7 +138,12 @@ async fn get(config: Config, file_name: String, output: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()> {
+async fn put(
+    config: Config,
+    source: PathBuf,
+    name: Option<String>,
+    prefix: Option<String>,
+) -> Result<()> {
     let pool = create_pool(&config.database.host).await?;
 
     let client = Notion::new(config.notion.token_v2, config.notion.user_agent);
@@ -140,6 +170,7 @@ async fn put(config: Config, source: PathBuf, name: Option<String>) -> Result<()
     } else {
         get_file_stem(&source)?
     };
+    let name = prefix.map(|prefix| prefix + &name).unwrap_or(name);
 
     if FileRow::is_exists(&pool, &name).await? {
         bail!("file_name ({name}) is already exists.");
