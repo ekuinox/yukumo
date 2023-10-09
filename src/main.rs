@@ -32,6 +32,9 @@ struct Cli {
     #[clap(short, long, global = true, env = "YUKUMO_CONFIG")]
     config: Option<PathBuf>,
 
+    #[clap(short, long, global = true)]
+    skip_on_failure: bool,
+
     #[clap(subcommand)]
     subcommand: Subcommand,
 }
@@ -90,11 +93,15 @@ async fn main() -> Result<()> {
                 let dir = source.read_dir().context("Failed to read directory.")?;
                 for entry in dir {
                     if let Ok(entry) = entry {
-                        put(config.clone(), entry.path(), None, prefix.clone())
-                            .await
-                            .with_context(|| {
-                                format!("Failed to put {}.", entry.path().to_string_lossy())
-                            })?;
+                        if let Err(e) =
+                            put(config.clone(), entry.path(), None, prefix.clone()).await
+                        {
+                            log::error!("Failed to put {}", entry.path().to_string_lossy());
+                            log::error!("{e:#?}");
+                            if !cli.skip_on_failure {
+                                bail!("Aborted by error.");
+                            }
+                        }
                     }
                 }
                 Ok(())
